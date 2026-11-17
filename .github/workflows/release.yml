@@ -9,6 +9,8 @@ on:
     branches: [master, main]
     paths:
       - package.json
+      - pnpm-workspace.yaml
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:
