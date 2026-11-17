@@ -1,0 +1,107 @@
+name: Release
+
+# package.json 的 version 变化后自动打 tag v<version> 并发布 GitHub Release。
+# 判定方式：读取当前 version，若对应 tag 不存在就构建并发布；已存在则跳过。
+# 这样只改依赖、不改版本号的 package.json 提交不会触发发布。
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - package.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      should_release: ${{ steps.ver.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: ver
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION already exists, skip release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version v$VERSION detected."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-windows:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12   # 与本机 pnpm 12.10.1 保持一致，避免 lockfile 不兼容
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm run build
+
+      - name: Build installer (NSIS)
+        run: pnpm exec electron-builder --win nsis --x64 --publish never
+        env:
+          ELECTRON_RUN_AS_NODE: ""
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Pack portable zip
+        shell: pwsh
+        run: |
+          $zip = "release/Webdev-Sync-$env:VERSION-portable-x64.zip"
+          Compress-Archive -Path "release/win-unpacked/*" -DestinationPath $zip -Force
+          Get-ChildItem release -File | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ env.VERSION }}
+          path: |
+            release/Webdev-Sync-${{ env.VERSION }}-x64.exe
+            release/Webdev-Sync-${{ env.VERSION }}-portable-x64.zip
+          if-no-files-found: error
+
+  release:
+    needs: [check, build-windows]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-${{ env.VERSION }}
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ env.VERSION }}
+          generate_release_notes: true
+          files: artifacts/*
+          fail_on_unmatched_files: true
