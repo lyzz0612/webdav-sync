@@ -1,7 +1,7 @@
 {
   "name": "webdev-sync",
   "version": "0.1.0",
-  "description": "123 网盘 WebDAV 文档同步助手",
+  "description": "Windows 桌面端 WebDAV 单向同步工具：本地文件改动后自动上传到 WebDAV 远端目录",
   "author": "Webdev Sync",
   "private": true,
   "type": "module",
