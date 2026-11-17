@@ -3,6 +3,9 @@ name: Release
 # package.json 的 version 变化后自动打 tag v<version> 并发布 GitHub Release。
 # 判定方式：读取当前 version，若对应 tag 不存在就构建并发布；已存在则跳过。
 # 这样只改依赖、不改版本号的 package.json 提交不会触发发布。
+#
+# 发布前先更新 CHANGELOG.md：把 [Unreleased] 归档为新版本小节（为空时按
+# Conventional Commits 生成），提交回分支；tag、构建和 Release 说明都基于这次提交。
 
 on:
   push:
@@ -26,9 +29,11 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
       should_release: ${{ steps.ver.outputs.should_release }}
+      sha: ${{ steps.changelog.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - id: ver
@@ -43,6 +48,24 @@ jobs:
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - id: changelog
+        if: steps.ver.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          node scripts/changelog.mjs "$VERSION" "$(TZ=Asia/Shanghai date +%F)"
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "CHANGELOG.md already up to date."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add CHANGELOG.md
+            git commit -m "chore(release): v$VERSION [skip ci]"
+            git pull --rebase origin "${{ github.ref_name }}"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build-windows:
     needs: check
     if: needs.check.outputs.should_release == 'true'
@@ -51,6 +74,8 @@ jobs:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -94,6 +119,14 @@ jobs:
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+
+      # CHANGELOG 已包含该版本，这里只提取对应小节作为 Release 说明
+      - name: Extract release notes
+        run: node scripts/changelog.mjs "$VERSION" "" release-notes.md
+
       - uses: actions/download-artifact@v4
         with:
           name: windows-${{ env.VERSION }}
@@ -102,8 +135,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ needs.check.outputs.sha }}
           name: v${{ env.VERSION }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: artifacts/*
           fail_on_unmatched_files: true
